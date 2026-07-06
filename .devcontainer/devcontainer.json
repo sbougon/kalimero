@@ -1,0 +1,19 @@
+{
+  "name": "kalimero",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "remoteUser": "node",
+  "mounts": [
+    "source=kalimero-codex-home,target=/home/node/.codex,type=volume",
+    "source=kalimero-gh-config,target=/home/node/.config/gh,type=volume"
+  ],
+  "postCreateCommand": "sudo chown -R node:node /home/node/.codex /home/node/.config/gh && codex --version",
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
+    }
+  }
+}

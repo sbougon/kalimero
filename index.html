@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Connect Four Value Network</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="left-pane">
+        <header class="top-bar">
+          <div>
+            <h1>Connect Four Value Net</h1>
+            <p id="statusText">Ready</p>
+          </div>
+          <div class="model-actions">
+            <button id="saveBtn" type="button">Save</button>
+            <button id="exportBtn" type="button">Export</button>
+            <label class="file-btn">
+              Import
+              <input id="importInput" type="file" accept="application/json" />
+            </label>
+            <button id="resetModelBtn" class="danger" type="button">Reset</button>
+          </div>
+        </header>
+
+        <section class="board-section">
+          <div class="board-wrap">
+            <div class="arrow-row" id="arrowRow" aria-label="Column selectors"></div>
+            <div id="board" class="board" aria-label="Connect Four board"></div>
+          </div>
+          <aside class="side-panel">
+            <div class="panel-header">
+              <h2>Test Game</h2>
+              <button id="newGameBtn" type="button">New</button>
+            </div>
+            <label class="mode-picker">
+              Mode
+              <select id="testModeSelect">
+                <option value="human-ai">Human vs AI</option>
+                <option value="ai-human">AI vs Human</option>
+                <option value="ai-random">AI vs Random</option>
+                <option value="random-ai">Random vs AI</option>
+                <option value="ai-ai">AI vs AI</option>
+              </select>
+            </label>
+            <div class="turn-line">
+              <span id="gameStatus">Red to move</span>
+              <button id="aiMoveBtn" type="button">AI Move</button>
+            </div>
+            <div class="columns" id="columnButtons"></div>
+            <div class="score-list" id="scoreList"></div>
+          </aside>
+        </section>
+
+        <section class="controls-grid">
+          <div class="control-card">
+            <h2>Training</h2>
+            <div class="form-grid">
+              <label>
+                Player architecture
+                <select id="architectureSelect"></select>
+              </label>
+              <label>
+                Games
+                <input id="gameCountInput" type="number" min="1" step="1000" value="100000" />
+              </label>
+              <label>
+                Workers
+                <input id="workerCountInput" type="number" min="1" max="12" step="1" value="4" />
+              </label>
+              <label>
+                Batch / worker
+                <input id="batchSizeInput" type="number" min="1" max="1000" step="10" value="100" />
+              </label>
+              <label>
+                Learning rate
+                <input id="learningRateInput" type="number" min="0.0001" max="1" step="0.001" value="0.01" />
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="trainBtn" type="button">Train</button>
+              <button id="pauseBtn" type="button">Pause</button>
+              <button id="trainOneBtn" type="button">Train 1</button>
+              <button id="trainPresetBtn" type="button">Train 100k</button>
+            </div>
+            <p id="curriculumText" class="curriculum-text"></p>
+          </div>
+
+          <div class="control-card stats-card">
+            <h2>Stats</h2>
+            <dl id="statsList"></dl>
+          </div>
+        </section>
+
+        <section class="benchmark-card">
+          <div class="benchmark-head">
+            <div>
+              <h2>Benchmark</h2>
+              <p id="benchmarkStatus">No benchmark yet</p>
+            </div>
+            <div class="button-row">
+              <button id="runBenchmarkBtn" type="button">Run Benchmark</button>
+              <button id="downloadBenchmarkBtn" type="button">Download</button>
+              <button id="clearBenchmarkBtn" type="button">Clear</button>
+            </div>
+          </div>
+          <div class="benchmark-controls">
+            <label>
+              Benchmark
+              <select id="benchmarkScenarioSelect">
+                <option value="pure-vs-random">Pure NN vs random</option>
+                <option value="pure-vs-tactical">Pure NN vs win/block</option>
+                <option value="engine-vs-tactical">Engine vs win/block</option>
+                <option value="engine-vs-random">Engine vs random</option>
+                <option value="pure-vs-engine">Pure NN vs engine</option>
+              </select>
+            </label>
+            <label>
+              Quick games
+              <input id="quickBenchmarkGamesInput" type="number" min="100" step="100" value="5000" />
+            </label>
+            <label>
+              Checkpoint every
+              <input id="benchmarkIntervalInput" type="number" min="100" step="1000" value="25000" />
+            </label>
+            <label>
+              Final games
+              <input id="finalBenchmarkGamesInput" type="number" min="1000" step="1000" value="20000" />
+            </label>
+            <label>
+              Auto benchmark
+              <input id="autoBenchmarkInput" type="checkbox" checked />
+            </label>
+          </div>
+          <canvas id="benchmarkCanvas" width="900" height="300"></canvas>
+          <dl id="benchmarkStats" class="benchmark-stats"></dl>
+        </section>
+
+        <section class="tournament-card">
+          <div class="benchmark-head">
+            <div>
+              <h2>NN Tournament</h2>
+              <p id="tournamentStatus">0 / 4 models loaded</p>
+            </div>
+            <div class="button-row">
+              <button id="runTournamentBtn" type="button">Run Tournament</button>
+              <button id="clearTournamentBtn" type="button">Clear</button>
+            </div>
+          </div>
+          <div class="tournament-controls">
+            <label class="file-btn">
+              Load slot 1
+              <input data-tournament-slot="0" type="file" accept="application/json" />
+            </label>
+            <label class="file-btn">
+              Load slot 2
+              <input data-tournament-slot="1" type="file" accept="application/json" />
+            </label>
+            <label class="file-btn">
+              Load slot 3
+              <input data-tournament-slot="2" type="file" accept="application/json" />
+            </label>
+            <label class="file-btn">
+              Load slot 4
+              <input data-tournament-slot="3" type="file" accept="application/json" />
+            </label>
+            <label>
+              Games / match
+              <input id="tournamentGamesInput" type="number" min="2" step="100" value="1000" />
+            </label>
+          </div>
+          <div id="tournamentBracket" class="tournament-bracket"></div>
+          <table class="standings-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Model</th>
+                <th>Score</th>
+                <th>W/D/L</th>
+                <th>Matches</th>
+              </tr>
+            </thead>
+            <tbody id="tournamentStandings"></tbody>
+          </table>
+        </section>
+      </section>
+
+      <section class="weights-pane">
+        <header class="weights-header">
+          <div>
+            <h2>Weights</h2>
+            <p id="weightsMeta">42 -> 64 -> 1</p>
+          </div>
+          <button id="refreshWeightsBtn" type="button">Refresh</button>
+        </header>
+        <div class="canvas-stack">
+          <div>
+            <div class="canvas-label">Network shape</div>
+            <canvas id="networkCanvas" width="520" height="260"></canvas>
+          </div>
+          <div class="neuron-inspector">
+            <div class="inspector-head">
+              <div>
+                <div class="canvas-label">Selected hidden neuron</div>
+                <strong id="hiddenNeuronLabel">Hidden 1</strong>
+              </div>
+              <label>
+                Neuron
+                <input id="hiddenNeuronInput" type="range" min="0" max="63" step="1" value="0" />
+              </label>
+            </div>
+            <canvas id="featureCanvas" width="7" height="6"></canvas>
+            <div id="featureMeta" class="feature-meta"></div>
+          </div>
+          <div>
+            <div class="canvas-label">All input to hidden weights</div>
+            <canvas id="w1Canvas" width="420" height="640"></canvas>
+          </div>
+          <div class="small-canvas-row">
+            <div>
+              <div class="canvas-label">Hidden bias</div>
+              <canvas id="b1Canvas" width="420" height="32"></canvas>
+            </div>
+            <div>
+              <div class="canvas-label">Hidden to output</div>
+              <canvas id="w2Canvas" width="420" height="32"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
