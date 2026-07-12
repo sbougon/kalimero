@@ -35,9 +35,9 @@
             <div class="section-head"><div><h2>Train From Solver</h2><p>Teacher labels, cross-entropy student</p></div><span id="trainState" class="state-pill">Idle</span></div>
             <div class="form-grid">
               <label>Training positions<input id="positionsInput" type="number" min="100" max="200000" step="1000" value="12000" /></label>
-              <label>Solver depth<select id="depthInput"><option value="3">3 - quick</option><option value="4" selected>4 - balanced</option><option value="5">5 - stronger</option></select></label>
-              <label>Learning rate<input id="learningRateInput" type="number" min="0.0001" max="0.02" step="0.0001" value="0.002" /></label>
-              <label>Optimizer<input value="Adam, online + mirror" disabled /></label>
+              <label>Solver depth<select id="depthInput"><option value="5">5 - quick</option><option value="7" selected>7 - recommended</option><option value="8">8 - stronger</option></select></label>
+              <label>Initial learning rate<input id="learningRateInput" type="number" min="0.00001" max="0.01" step="0.0001" value="0.001" /></label>
+              <label>Optimizer<input value="Persistent Adam, batch 128" disabled /></label>
             </div>
             <div class="actions"><button id="trainBtn" class="primary">Train</button><button id="quickTrainBtn">Quick 2k</button><button id="stopBtn" disabled>Stop</button></div>
             <progress id="trainProgress" max="1" value="0"></progress>
@@ -48,7 +48,7 @@
             <div class="section-head"><div><h2>Benchmark</h2><p id="benchmarkStatus">Not run</p></div><button id="benchmarkBtn">Run</button></div>
             <div class="form-grid compact">
               <label>Opponent<select id="benchmarkOpponent"><option value="random">Pure random</option><option value="engine-random" selected>Engine + random</option><option value="solver">Solver</option></select></label>
-              <label>Games<input id="benchmarkGames" type="number" min="20" max="2000" step="20" value="200" /></label>
+              <label>Games<input id="benchmarkGames" type="number" min="100" max="50000" step="1000" value="5000" /></label>
             </div>
             <canvas id="benchmarkCanvas" width="600" height="220"></canvas>
             <dl id="benchmarkStats" class="stats four"></dl>
@@ -57,24 +57,22 @@
 
         <section class="panel math-panel">
           <div class="section-head"><div><h2>Forward Pass Math</h2><p>Exact function used by the AI on every turn</p></div></div>
-          <pre>input x = [my_piece(0..41), opponent_piece(0..41),
-           my_win_now(0..6), opponent_win_now(0..6)]
-h1[j] = ReLU(b1[j] + sum(i=0..97) W1[j,i] * x[i])
-h2[k] = ReLU(b2[k] + sum(j=0..95) W2[k,j] * h1[j])
-logit[c] = b3[c] + sum(k=0..63) W3[c,k] * h2[k]
-           + sum(t=0..13) Skip[c,t] * tactical_input[t]
-P(column=c) = exp(logit[c]) / sum(legal q) exp(logit[q])
-loss = -sum(c=0..6) teacher[c] * log(P(column=c))
-AI move = argmax(legal c) P(column=c)</pre>
+          <pre>x = 2 planes × 6 rows × 7 columns (mine, opponent)
+trunk = ReLU(Conv3×3(x, 64 channels))
+repeat 4×: trunk = ReLU(trunk + Conv3×3(ReLU(Conv3×3(trunk))))
+policy = SoftmaxLegal(Dense(ReLU(Conv1×1(trunk))))
+value = tanh(Dense(ReLU(Dense(ReLU(Conv1×1(trunk))))))
+loss = soft solver-policy cross entropy + 0.25 × value MSE
+AI move = argmax(legal column) policy[column]</pre>
           <p class="note">The solver exists only to create labels and to play when selected. The AI player calls the network once and uses no search, win/block rule, or solver fallback.</p>
         </section>
       </section>
 
       <aside class="inspector panel">
-          <div class="section-head"><div><h2>Network Inspector</h2><p id="networkMeta">98 -> 96 -> 64 -> 7</p></div><button id="refreshBtn" title="Refresh visualization" aria-label="Refresh visualization">&#8635;</button></div>
+          <div class="section-head"><div><h2>Network Inspector</h2><p id="networkMeta">4-block, 64-channel residual policy/value CNN</p></div><button id="refreshBtn" title="Refresh visualization" aria-label="Refresh visualization">&#8635;</button></div>
         <canvas id="networkCanvas" width="520" height="270"></canvas>
         <div class="inspector-controls">
-          <label>Layer<select id="layerSelect"><option value="0">Input -> hidden 1</option><option value="1">Hidden 1 -> hidden 2</option><option value="2">Hidden 2 -> output</option></select></label>
+          <label>Layer<select id="layerSelect"><option value="0">Stem convolution</option><option value="1">Residual 1 / conv 1</option><option value="2">Residual 1 / conv 2</option><option value="9">Policy convolution</option><option value="10">Policy head</option><option value="11">Value convolution</option></select></label>
           <label>Neuron / output<input id="neuronInput" type="range" min="0" max="95" value="0" /><output id="neuronOutput">0</output></label>
         </div>
         <canvas id="weightsCanvas" width="520" height="250"></canvas>
