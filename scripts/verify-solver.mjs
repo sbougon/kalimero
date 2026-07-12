@@ -1,69 +1,39 @@
-import { Worker } from "node:worker_threads";
-import { applyMove, checkWin } from "../src/core.js";
-import { createPolicyModel, deserializePolicy, serializePolicy, choosePolicyMove, chooseRandomMove, chooseEngineRandomMove, newBoard } from "../src/solver-core.js";
+import assert from "node:assert/strict";
+import { applyMove } from "../src/core.js";
+import {
+  POLICY_SCHEMA,
+  createPolicyModel,
+  deserializePolicy,
+  newBoard,
+  parameterCount,
+  policyValueForward,
+  serializePolicy,
+  teacherTarget,
+  valueTarget
+} from "../src/solver-core.js";
 
-function play(model, aiPlayer, opponent) {
-  const board = newBoard();
-  let player = 1;
-  for (let turn = 0; turn < 42; turn++) {
-    const col = player === aiPlayer
-      ? choosePolicyMove(model, board, player)
-      : opponent === "random"
-        ? chooseRandomMove(board)
-        : chooseEngineRandomMove(board, player);
-    if (col === null) return 0;
-    const row = applyMove(board, col, player);
-    if (checkWin(board, row, col, player)) return player;
-    player = -player;
-  }
-  return 0;
-}
+const model=createPolicyModel();
+const count=parameterCount(model);
+assert.equal(model.schema,POLICY_SCHEMA);
+assert.ok(count>=300000&&count<=600000,`parameter count ${count} is outside the V2 target`);
 
-function benchmark(model, opponent, games = 200) {
-  const result = { wins: 0, draws: 0, losses: 0 };
-  for (let i = 0; i < games; i++) {
-    const aiPlayer = i % 2 ? -1 : 1;
-    const winner = play(model, aiPlayer, opponent);
-    if (winner === aiPlayer) result.wins++;
-    else if (winner === 0) result.draws++;
-    else result.losses++;
-  }
-  result.score = (result.wins + 0.5 * result.draws) / games;
-  return result;
-}
+const board=newBoard();
+for(let i=0;i<6;i++)applyMove(board,0,i%2?1:-1);
+const output=policyValueForward(model,board,1);
+assert.equal(output.probabilities[0],0,"full columns must be masked");
+assert.ok(Math.abs(output.probabilities.reduce((a,b)=>a+b,0)-1)<1e-5,"legal policy must normalize");
+assert.ok(output.value>=-1&&output.value<=1,"value head must be bounded");
 
-function train(model, positions, depth) {
-  const moduleUrl = new URL("../src/solver-trainer-worker.js", import.meta.url).href;
-  const source = `
-    import { parentPort } from "node:worker_threads";
-    globalThis.self = {
-      postMessage: message => parentPort.postMessage(message),
-      onmessage: null
-    };
-    parentPort.on("message", data => globalThis.self.onmessage({ data }));
-    await import(${JSON.stringify(moduleUrl)});
-  `;
-  const url = new URL(`data:text/javascript,${encodeURIComponent(source)}`);
-  const worker = new Worker(url, { type: "module" });
-  return new Promise((resolve, reject) => {
-    worker.on("message", message => {
-      if (message.type === "done") {
-        worker.terminate();
-        resolve(deserializePolicy(message.model));
-      } else if (message.type === "error") reject(new Error(message.message));
-    });
-    worker.on("error", reject);
-    worker.postMessage({ type: "train", model: serializePolicy(model), positions, depth, learningRate: 0.002 });
-  });
-}
+const scores=[100,-20,0,10,null,-100,50];
+const target=teacherTarget(scores);
+assert.equal(target[4],0,"illegal actions must receive no target mass");
+assert.ok(target.filter(x=>x>0).length>1,"solver target must be soft, not one-hot");
+assert.ok(Math.abs(target.reduce((a,b)=>a+b,0)-1)<1e-5,"solver target must normalize");
+assert.ok(valueTarget(scores)>0,"value target must follow the best legal action value");
 
-let model = createPolicyModel();
-console.log("untrained random", benchmark(model, "random"));
-console.log("untrained engine-random", benchmark(model, "engine-random"));
-const runs=Number(process.argv[4]||1);
-for(let run=1;run<=runs;run++) {
-  model = await train(model, Number(process.argv[2] || 2000), Number(process.argv[3] || 3));
-  console.log(`training run ${run}`, model.training);
-  console.log("trained random", benchmark(model, "random"));
-  console.log("trained engine-random", benchmark(model, "engine-random"));
-}
+const restored=deserializePolicy(serializePolicy(model));
+assert.equal(restored.modelId,model.modelId,"serialization must preserve training identity");
+assert.equal(parameterCount(restored),count,"serialization must preserve all parameters");
+assert.equal(restored.stem.weights[17],model.stem.weights[17],"serialization must preserve exact float32 weights");
+
+console.log(`V2 solver policy verified: ${count.toLocaleString()} parameters, soft targets, policy/value heads, compact round trip.`);

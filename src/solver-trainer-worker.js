@@ -1,108 +1,50 @@
-import { applyMove, checkWin } from "./core.js";
-import { chooseEngineRandomMove, choosePolicyMove, chooseRandomMove, chooseSolverMove, deserializePolicy, policyForward, serializePolicy, solverScores, teacherTarget, newBoard } from "./solver-core.js";
+import { ROWS, COLS, CELLS, applyMove, checkWin, getLegalMoves } from "./core.js";
+import { chooseEngineRandomMove, choosePolicyMove, chooseRandomMove, chooseSolverMove, deserializePolicy, modelLayers, newBoard, policyValueForward, serializePolicy, solverScores, teacherTarget, valueTarget } from "./solver-core.js";
 
-let stopped = false;
-self.onmessage = event => {
-  if (event.data.type === "stop") { stopped = true; return; }
-  if (event.data.type !== "train") return;
-  stopped = false;
-  train(event.data).catch(error => self.postMessage({type:"error",message:error.message}));
-};
+const DB_NAME="connect4-solver-training-v2",DB_VERSION=1,STATE_KEY="trainer",DEFAULT_REPLAY=250000,VALIDATION_SIZE=1024;
+let stopped=false;
+self.onmessage=e=>{if(e.data.type==="stop"){stopped=true;return;}if(e.data.type==="clear"){clearState();return;}if(e.data.type==="train"){stopped=false;train(e.data).catch(error=>self.postMessage({type:"error",message:error.stack||error.message}));}};
+const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
 
-function createAdam(model) {
-  const layers=model.layers.map(layer => ({ mw:new Float32Array(layer.weights.length), vw:new Float32Array(layer.weights.length), mb:new Float32Array(layer.biases.length), vb:new Float32Array(layer.biases.length) }));
-  layers.skip={m:new Float32Array(model.skipWeights.length),v:new Float32Array(model.skipWeights.length)};
-  return layers;
-}
+function openDb(){return new Promise((resolve,reject)=>{const request=indexedDB.open(DB_NAME,DB_VERSION);request.onupgradeneeded=()=>request.result.createObjectStore("state");request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});}
+async function dbGet(){const db=await openDb();return new Promise((resolve,reject)=>{const tx=db.transaction("state","readonly"),request=tx.objectStore("state").get(STATE_KEY);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);tx.oncomplete=()=>db.close();});}
+async function dbPut(value){const db=await openDb();return new Promise((resolve,reject)=>{const tx=db.transaction("state","readwrite");tx.objectStore("state").put(value,STATE_KEY);tx.oncomplete=()=>{db.close();resolve();};tx.onerror=()=>reject(tx.error);});}
+async function clearState(){const db=await openDb();const tx=db.transaction("state","readwrite");tx.objectStore("state").delete(STATE_KEY);tx.oncomplete=()=>{db.close();self.postMessage({type:"cleared"});};}
 
-function trainSample(model, board, player, target, adam, lr, step) {
-  const result = policyForward(model, board, player);
-  const deltas = new Array(model.layers.length);
-  const outputDelta = new Float32Array(7);
-  let loss = 0;
-  for (let c=0;c<7;c++) { outputDelta[c] = result.probabilities[c] - target[c]; if (target[c]) loss -= target[c] * Math.log(Math.max(1e-8,result.probabilities[c])); }
-  deltas[2] = outputDelta;
-  for (let l=2;l>0;l--) {
-    const layer=model.layers[l], previous=result.activations[l], delta=new Float32Array(layer.inputSize);
-    for (let i=0;i<layer.inputSize;i++) { let sum=0; for(let o=0;o<layer.outputSize;o++) sum += layer.weights[o*layer.inputSize+i]*deltas[l][o]; delta[i]=previous[i]>0?sum:0; }
-    deltas[l-1]=delta;
-  }
-  const b1=.9,b2=.999,eps=1e-8;
-  for(let l=0;l<model.layers.length;l++) {
-    const layer=model.layers[l], state=adam[l], previous=result.activations[l], delta=deltas[l];
-    for(let o=0;o<layer.outputSize;o++) {
-      const gradB=Math.max(-5,Math.min(5,delta[o])); state.mb[o]=b1*state.mb[o]+(1-b1)*gradB; state.vb[o]=b2*state.vb[o]+(1-b2)*gradB*gradB;
-      layer.biases[o]-=lr*(state.mb[o]/(1-Math.pow(b1,step)))/(Math.sqrt(state.vb[o]/(1-Math.pow(b2,step)))+eps);
-      const offset=o*layer.inputSize;
-      for(let i=0;i<layer.inputSize;i++) { const idx=offset+i, grad=Math.max(-5,Math.min(5,delta[o]*previous[i])); state.mw[idx]=b1*state.mw[idx]+(1-b1)*grad; state.vw[idx]=b2*state.vw[idx]+(1-b2)*grad*grad; layer.weights[idx]-=lr*(state.mw[idx]/(1-Math.pow(b1,step)))/(Math.sqrt(state.vw[idx]/(1-Math.pow(b2,step)))+eps); }
-    }
-  }
-  const skip=adam.skip, input=result.activations[0];
-  for(let o=0;o<7;o++) for(let t=0;t<14;t++) { const idx=o*14+t,grad=outputDelta[o]*input[84+t];skip.m[idx]=b1*skip.m[idx]+(1-b1)*grad;skip.v[idx]=b2*skip.v[idx]+(1-b2)*grad*grad;model.skipWeights[idx]-=lr*(skip.m[idx]/(1-Math.pow(b1,step)))/(Math.sqrt(skip.v[idx]/(1-Math.pow(b2,step)))+eps); }
-  let predicted=0, expected=0; for(let c=1;c<7;c++){if(result.probabilities[c]>result.probabilities[predicted])predicted=c;if(target[c]>target[expected])expected=c;}
-  return {loss, correct:target[predicted]>0?1:0};
-}
+function emptyGrad(model){return modelLayers(model).map(l=>({weights:new Float32Array(l.weights.length),biases:new Float32Array(l.biases.length)}));}
+function createAdam(model){return{step:0,layers:modelLayers(model).map(l=>({mw:new Float32Array(l.weights.length),vw:new Float32Array(l.weights.length),mb:new Float32Array(l.biases.length),vb:new Float32Array(l.biases.length)}))};}
+function denseBackward(layer,input,gradOut,grad){const gradIn=new Float32Array(layer.inputSize);for(let o=0;o<layer.outputSize;o++){const d=gradOut[o];grad.biases[o]+=d;const off=o*layer.inputSize;for(let i=0;i<layer.inputSize;i++){grad.weights[off+i]+=d*input[i];gradIn[i]+=layer.weights[off+i]*d;}}return gradIn;}
+function convBackward(layer,input,gradOut,grad){const gradIn=new Float32Array(layer.inputSize*CELLS),k=layer.kernel,pad=k>>1;for(let oc=0;oc<layer.outputSize;oc++)for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){const d=gradOut[oc*CELLS+r*COLS+c];grad.biases[oc]+=d;for(let ic=0;ic<layer.inputSize;ic++)for(let kr=0;kr<k;kr++)for(let kc=0;kc<k;kc++){const rr=r+kr-pad,cc=c+kc-pad;if(rr<0||rr>=ROWS||cc<0||cc>=COLS)continue;const wi=(((oc*layer.inputSize+ic)*k+kr)*k+kc),ii=ic*CELLS+rr*COLS+cc;grad.weights[wi]+=d*input[ii];gradIn[ii]+=layer.weights[wi]*d;}}return gradIn;}
 
-function randomPosition(model, depth) {
-  for (;;) {
-    const board=newBoard(); let player=1; const plies=Math.floor(Math.random()*32);
-    const seekTactical = Math.random() < .7;
-    let terminal=false;
-    for(let turn=0;turn<(seekTactical?36:plies);turn++) {
-      if(seekTactical && turn>=4 && hasTacticalChoice(board,player)) return {board,player};
-      let col;
-      const roll=Math.random(), trained=model.training.positions>1000;
-      if(roll<(trained?.45:.05) && trained) col=choosePolicyMove(model,board,player);
-      else if(roll<(trained?.8:.45)) col=chooseEngineRandomMove(board,player);
-      else if(roll<(trained?.85:.52) && turn<18) col=chooseSolverMove(board,player,Math.max(2,depth-1));
-      else col=chooseRandomMove(board);
-      if(col===null){terminal=true;break;}
-      const row=applyMove(board,col,player); if(checkWin(board,row,col,player)){terminal=true;break;} player=-player;
-    }
-    if(!terminal) return {board,player};
-  }
-}
+function trainExample(model,sample,grads){const f=policyValueForward(model,sample.board,sample.player,true),cache=f.cache,layers=modelLayers(model);let policyLoss=0;const dLogits=new Float32Array(COLS);for(let c=0;c<COLS;c++){dLogits[c]=f.probabilities[c]-sample.target[c];if(sample.target[c])policyLoss-=sample.target[c]*Math.log(Math.max(1e-8,f.probabilities[c]));}
+  let gi=denseBackward(model.policy.dense,cache.policyA,dLogits,grads[layers.indexOf(model.policy.dense)]);for(let i=0;i<gi.length;i++)if(cache.policyZ[i]<=0)gi[i]=0;const trunkPolicy=convBackward(model.policy.conv,cache.trunk,gi,grads[layers.indexOf(model.policy.conv)]);
+  const valueError=f.value-sample.valueTarget,valueLoss=valueError*valueError;let dv=new Float32Array([.5*valueError*(1-f.value*f.value)]);gi=denseBackward(model.value.output,cache.hidden,dv,grads[layers.indexOf(model.value.output)]);for(let i=0;i<gi.length;i++)if(cache.hiddenZ[i]<=0)gi[i]=0;gi=denseBackward(model.value.hidden,cache.valueA,gi,grads[layers.indexOf(model.value.hidden)]);for(let i=0;i<gi.length;i++)if(cache.valueZ[i]<=0)gi[i]=0;const trunkValue=convBackward(model.value.conv,cache.trunk,gi,grads[layers.indexOf(model.value.conv)]);
+  let trunkGrad=new Float32Array(trunkPolicy.length);for(let i=0;i<trunkGrad.length;i++)trunkGrad[i]=trunkPolicy[i]+trunkValue[i];
+  for(let bi=model.blocks.length-1;bi>=0;bi--){const b=model.blocks[bi],bc=cache.blocks[bi];for(let i=0;i<trunkGrad.length;i++)if(bc.out[i]<=0)trunkGrad[i]=0;const skip=new Float32Array(trunkGrad),g1=convBackward(b.conv2,bc.a1,trunkGrad,grads[layers.indexOf(b.conv2)]);for(let i=0;i<g1.length;i++)if(bc.z1[i]<=0)g1[i]=0;const through=convBackward(b.conv1,bc.input,g1,grads[layers.indexOf(b.conv1)]);for(let i=0;i<trunkGrad.length;i++)trunkGrad[i]=skip[i]+through[i];}
+  for(let i=0;i<trunkGrad.length;i++)if(cache.stemZ[i]<=0)trunkGrad[i]=0;convBackward(model.stem,cache.input,trunkGrad,grads[0]);
+  let predicted=0,expected=0;for(let c=1;c<COLS;c++){if(f.probabilities[c]>f.probabilities[predicted])predicted=c;if(sample.target[c]>sample.target[expected])expected=c;}return{policyLoss,valueLoss,correct:predicted===expected?1:0};}
 
-function hasTacticalChoice(board, player) {
-  for (const side of [player, -player]) {
-    for (let col=0;col<7;col++) {
-      const copy=new Int8Array(board), row=applyMove(copy,col,side);
-      if(row>=0 && checkWin(copy,row,col,side)) return true;
-    }
-  }
-  return false;
-}
+function adamUpdate(model,grads,adam,lr,batchSize){const b1=.9,b2=.999,eps=1e-8;adam.step++;const layers=modelLayers(model);for(let l=0;l<layers.length;l++){const p=layers[l],g=grads[l],a=adam.layers[l];for(const kind of["weights","biases"]){const m=kind==="weights"?a.mw:a.mb,v=kind==="weights"?a.vw:a.vb,values=p[kind],gradient=g[kind];for(let i=0;i<values.length;i++){const x=Math.max(-2,Math.min(2,gradient[i]/batchSize));m[i]=b1*m[i]+(1-b1)*x;v[i]=b2*v[i]+(1-b2)*x*x;const mh=m[i]/(1-Math.pow(b1,adam.step)),vh=v[i]/(1-Math.pow(b2,adam.step));values[i]-=lr*mh/(Math.sqrt(vh)+eps);}}}}
 
-function mirror(board,target) {
-  const mirrored=new Int8Array(42), mirroredTarget=new Float32Array(7);
-  for(let r=0;r<6;r++) for(let c=0;c<7;c++) mirrored[r*7+(6-c)]=board[r*7+c];
-  for(let c=0;c<7;c++) mirroredTarget[6-c]=target[c];
-  return {board:mirrored,target:mirroredTarget};
-}
+function randomPlies(stage){if(stage==="early")return 4+Math.floor(Math.random()*8);if(stage==="middle")return 12+Math.floor(Math.random()*12);if(stage==="late")return 24+Math.floor(Math.random()*14);return 4+Math.floor(Math.random()*34);}
+function playPosition(model,depth,source){const board=newBoard();let player=1;const targetPlies=randomPlies(source);for(let turn=0;turn<targetPlies;turn++){let col;if(source==="solver")col=chooseSolverMove(board,player,Math.max(3,depth-2));else if(source==="nn")col=player===1?choosePolicyMove(model,board,player):chooseEngineRandomMove(board,player);else{const roll=Math.random();col=roll<.45?chooseEngineRandomMove(board,player):roll<.7?chooseRandomMove(board):choosePolicyMove(model,board,player);}if(col===null)return null;const row=applyMove(board,col,player);if(checkWin(board,row,col,player))return null;player=-player;}return{board,player,source};}
+function immediateCount(board,player){let n=0;for(const c of getLegalMoves(board)){const copy=new Int8Array(board),r=applyMove(copy,c,player);if(checkWin(copy,r,c,player))n++;}return n;}
+function hasForkMove(board,player){for(const col of getLegalMoves(board)){const copy=new Int8Array(board);applyMove(copy,col,player);if(immediateCount(copy,player)>=2)return true;}return false;}
+function tacticalKind(board,player){if(immediateCount(board,player))return"win";if(immediateCount(board,-player))return"block";if(hasForkMove(board,player))return"fork";if(hasForkMove(board,-player))return"fork-prevention";return null;}
+function generatePosition(model,depth,index){const strata=["win","block","fork","fork-prevention","early","middle","late","nn","solver"],wanted=strata[index%strata.length],isTactical=["win","block","fork","fork-prevention"].includes(wanted);for(let tries=0;tries<160;tries++){const source=isTactical?["early","middle","late"][Math.floor(Math.random()*3)]:wanted;const p=playPosition(model,depth,source);if(!p)continue;const tactical=tacticalKind(p.board,p.player);if(!isTactical||tactical===wanted)return{...p,source:tactical||wanted};}return playPosition(model,depth,"middle")||{board:newBoard(),player:1,source:wanted};}
+function labelPosition(position,depth,model){const scores=solverScores(position.board,position.player,depth),target=teacherTarget(scores),value=valueTarget(scores),nn=policyValueForward(model,position.board,position.player).probabilities;let a=0,b=0;for(let c=1;c<COLS;c++){if(nn[c]>nn[a])a=c;if(target[c]>target[b])b=c;}return{board:position.board,player:position.player,scores,target,valueTarget:value,source:a===b?position.source:"nn-mistake"};}
+function reservoirAdd(replay,sample,seen,capacity){if(replay.length<capacity)replay.push(sample);else{const j=Math.floor(Math.random()*seen);if(j<capacity)replay[j]=sample;}}
+function sampleBatch(replay,size){const result=[];for(let i=0;i<size;i++)result.push(replay[Math.floor(Math.random()*replay.length)]);return result;}
+function validationMetrics(model,set){let policy=0,value=0,correct=0;for(const s of set){const f=policyValueForward(model,s.board,s.player);for(let c=0;c<COLS;c++)if(s.target[c])policy-=s.target[c]*Math.log(Math.max(1e-8,f.probabilities[c]));value+=(f.value-s.valueTarget)**2;let a=0,b=0;for(let c=1;c<COLS;c++){if(f.probabilities[c]>f.probabilities[a])a=c;if(s.target[c]>s.target[b])b=c;}correct+=a===b;}return{loss:policy/set.length+.25*value/set.length,policyLoss:policy/set.length,valueLoss:value/set.length,agreement:correct/set.length};}
 
-async function train(message) {
-  const model=deserializePolicy(message.model), adam=createAdam(model), count=message.positions, depth=message.depth, lr=message.learningRate;
-  const samples=[];
-  for(let n=0;n<count && !stopped;n++) {
-    const sample=randomPosition(model,depth), scores=solverScores(sample.board,sample.player,depth);
-    samples.push({...sample,target:teacherTarget(scores)});
-    if(n%100===0 || n===count-1) { self.postMessage({type:"progress",stage:"labeling",completed:n+1,total:count,loss:0,agreement:0}); await new Promise(resolve=>setTimeout(resolve,0)); }
-  }
-  let lossSum=0, correct=0, completed=0, step=0;
-  const epochs=4;
-  for(let epoch=0;epoch<epochs && !stopped;epoch++) {
-    for(let i=samples.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[samples[i],samples[j]]=[samples[j],samples[i]];}
-    for(let n=0;n<samples.length && !stopped;n++) {
-      const sample=samples[n];
-      let result=trainSample(model,sample.board,sample.player,sample.target,adam,lr,++step); lossSum+=result.loss; correct+=result.correct; completed++;
-      const flipped=mirror(sample.board,sample.target); result=trainSample(model,flipped.board,sample.player,flipped.target,adam,lr,++step); lossSum+=result.loss; correct+=result.correct; completed++;
-      if(n%100===0 || n===samples.length-1) { self.postMessage({type:"progress",stage:`learning ${epoch+1}/${epochs}`,completed:epoch*samples.length+n+1,total:epochs*samples.length,loss:lossSum/completed,agreement:correct/completed}); await new Promise(resolve=>setTimeout(resolve,0)); }
-    }
-  }
-  model.training.positions += samples.length;
-  model.training.epochs += 1;
-  model.training.averageLoss = completed?lossSum/completed:0;
-  model.training.teacherAgreement = completed?correct/completed:0;
-  model.training.solverDepth = depth;
-  self.postMessage({type:"done",model:serializePolicy(model),stopped,completed});
-}
+async function train(message){const incoming=deserializePolicy(message.model);let state=await dbGet();if(!state||state.schema!==incoming.schema||state.modelId!==incoming.modelId||message.fresh){state={schema:incoming.schema,modelId:incoming.modelId,current:serializePolicy(incoming),best:serializePolicy(incoming),adam:createAdam(incoming),replay:[],validation:[],seen:0,bestLoss:Infinity,plateau:0,learningRate:message.learningRate||.001};}
+  const model=deserializePolicy(state.current),depth=Math.max(3,message.depth||7),count=message.positions,replayCap=Math.max(10000,message.replayCapacity||DEFAULT_REPLAY),batchSize=Math.max(16,message.batchSize||128);
+  while(state.validation.length<VALIDATION_SIZE&&!stopped){const i=state.validation.length,p=generatePosition(model,depth,i),s=labelPosition(p,depth,model);state.validation.push(s);if(i%32===0){self.postMessage({type:"progress",stage:"building fixed validation set",completed:i+1,total:VALIDATION_SIZE,loss:0,agreement:0});await tick();}}
+  if(stopped){model.training.replaySize=state.replay.length;state.current=serializePolicy(model);await dbPut(state);self.postMessage({type:"done",model:serializePolicy(model),stopped:true,completed:0});return;}
+  for(let n=0;n<count&&!stopped;n++){const p=generatePosition(model,depth,state.seen+n),s=labelPosition(p,depth,model);state.seen++;reservoirAdd(state.replay,s,state.seen,replayCap);if(n%32===0){self.postMessage({type:"progress",stage:`labeling ${s.source}`,completed:n+1,total:count,loss:0,agreement:0});await tick();}}
+  if(stopped){model.training.positions=state.seen;model.training.replaySize=state.replay.length;state.current=serializePolicy(model);await dbPut(state);self.postMessage({type:"done",model:serializePolicy(model),stopped:true,completed:0});return;}
+  let policySum=0,valueSum=0,correct=0,examples=0;const updates=Math.max(1,Math.ceil(count/batchSize)*2);
+  for(let u=0;u<updates&&!stopped;u++){const grads=emptyGrad(model),batch=sampleBatch(state.replay,Math.min(batchSize,state.replay.length));for(const s of batch){const m=trainExample(model,s,grads);policySum+=m.policyLoss;valueSum+=m.valueLoss;correct+=m.correct;examples++;}adamUpdate(model,grads,state.adam,state.learningRate,batch.length);if(u%4===0){self.postMessage({type:"progress",stage:"replay mini-batches",completed:u+1,total:updates,loss:(policySum+.25*valueSum)/examples,agreement:correct/examples});await tick();}}
+  const metrics=validationMetrics(model,state.validation);const improved=metrics.loss<state.bestLoss-1e-4;if(improved){state.bestLoss=metrics.loss;state.best=serializePolicy(model);state.plateau=0;}else state.plateau++;if(state.plateau>=2){state.learningRate=Math.max(1e-5,state.learningRate*.5);state.plateau=0;}
+  model.training.positions=state.seen;model.training.updates=state.adam.step;model.training.averageLoss=examples?(policySum+.25*valueSum)/examples:0;model.training.policyLoss=examples?policySum/examples:0;model.training.valueLoss=examples?valueSum/examples:0;model.training.teacherAgreement=examples?correct/examples:0;model.training.validationLoss=metrics.loss;model.training.learningRate=state.learningRate;model.training.solverDepth=depth;model.training.replaySize=state.replay.length;model.training.bestValidationLoss=state.bestLoss;model.training.plateauCount=state.plateau;
+  state.current=serializePolicy(model);if(improved)state.best=state.current;await dbPut(state);const deployed=deserializePolicy(state.best);deployed.training={...model.training,bestValidationLoss:state.bestLoss};self.postMessage({type:"done",model:serializePolicy(deployed),stopped,completed:examples,improved,validation:metrics,replaySize:state.replay.length,learningRate:state.learningRate});}

@@ -14,7 +14,10 @@ function game(model,aiPlayer,opponent) {
 }
 self.onmessage=e=>{
   if(e.data.type!=="benchmark")return;
-  const model=deserializePolicy(e.data.model), games=e.data.games, opponent=e.data.opponent; let wins=0,draws=0,losses=0;
-  for(let i=0;i<games;i++){const aiPlayer=i%2===0?1:-1,winner=game(model,aiPlayer,opponent);if(winner===aiPlayer)wins++;else if(winner===0)draws++;else losses++;}
-  self.postMessage({type:"done",result:{games,opponent,wins,draws,losses,score:(wins+.5*draws)/games}});
+  const model=deserializePolicy(e.data.model), games=e.data.games, opponent=e.data.opponent;
+  const red={games:0,wins:0,draws:0,losses:0},yellow={games:0,wins:0,draws:0,losses:0};
+  for(let i=0;i<games;i++){const aiPlayer=i%2===0?1:-1,bucket=aiPlayer===1?red:yellow,winner=game(model,aiPlayer,opponent);bucket.games++;if(winner===aiPlayer)bucket.wins++;else if(winner===0)bucket.draws++;else bucket.losses++;if(i%100===99)self.postMessage({type:"progress",completed:i+1,total:games});}
+  for(const bucket of[red,yellow])bucket.score=(bucket.wins+.5*bucket.draws)/bucket.games;
+  const wins=red.wins+yellow.wins,draws=red.draws+yellow.draws,losses=red.losses+yellow.losses;
+  self.postMessage({type:"done",result:{games,opponent,wins,draws,losses,score:(wins+.5*draws)/games,red,yellow}});
 };
