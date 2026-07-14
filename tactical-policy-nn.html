@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Connect Four Tactical Policy V3</title>
+    <link rel="stylesheet" href="./src/solver-styles.css" />
+  </head>
+  <body>
+    <header class="site-head">
+      <div><a href="./" class="back-link">Experiments</a><h1>Tactical Policy V3</h1><p id="appStatus">Fresh V3 model ready — import V2 to warm-start</p></div>
+      <div class="actions"><button id="saveBtn">Save</button><button id="exportBtn">Export Model</button><button id="exportStateBtn">Export State JSON</button><label class="file-button">Import V2/V3<input id="importInput" type="file" accept="application/json" /></label><button id="resetBtn" class="danger">Reset V3</button></div>
+    </header>
+
+    <main class="layout">
+      <section class="work-area">
+        <section class="game-band">
+          <div class="board-tool"><div id="columnMoves" class="column-moves"></div><div id="board" class="board" aria-label="Connect Four board"></div></div>
+          <div class="game-controls">
+            <div class="section-head"><div><h2>Game</h2><p id="gameStatus">Red to move</p></div><button id="newGameBtn">New game</button></div>
+            <div class="player-pickers">
+              <label><span class="red-dot"></span> Red player<select id="redPlayer"><option value="human">Human</option><option value="v3" selected>AI V3 (tactical shield)</option><option value="ai">AI (pure NN)</option><option value="solver">Solver</option><option value="engine-random">Engine + random</option><option value="random">Random</option></select></label>
+              <label><span class="yellow-dot"></span> Yellow player<select id="yellowPlayer"><option value="human" selected>Human</option><option value="v3">AI V3 (tactical shield)</option><option value="ai">AI (pure NN)</option><option value="solver">Solver</option><option value="engine-random">Engine + random</option><option value="random">Random</option></select></label>
+            </div>
+            <div class="legend"><span><i class="swatch nn"></i>NN probability</span><span><i class="swatch solver"></i>Solver score</span></div>
+            <div id="moveReadout" class="move-readout"></div>
+          </div>
+        </section>
+
+        <section class="two-col">
+          <section class="panel train-panel">
+            <div class="section-head"><div><h2>V3 Tactical Curriculum</h2><p>75% hard tactics + 25% depth-5 strategy</p></div><span id="trainState" class="state-pill">Idle</span></div>
+            <div class="form-grid">
+              <label>New positions<input id="positionsInput" type="number" min="128" max="100000" step="1000" value="6000" /></label>
+              <label>Strategic solver depth<select id="depthInput"><option value="4">4 - quick</option><option value="5" selected>5 - recommended</option><option value="6">6 - stronger</option></select></label>
+              <label>Initial learning rate<input id="learningRateInput" type="number" min="0.00001" max="0.01" step="0.0001" value="0.0005" /></label>
+              <label>Training recipe<input value="Balanced replay × tactical weight 2" disabled /></label>
+            </div>
+            <div class="actions"><button id="trainBtn" class="primary">Train V3</button><button id="quickTrainBtn">Quick 1k</button><button id="stopBtn" disabled>Stop</button></div>
+            <progress id="trainProgress" max="1" value="0"></progress>
+            <dl id="trainStats" class="stats"></dl>
+          </section>
+
+          <section class="panel benchmark-panel">
+            <div class="section-head"><div><h2>Benchmark</h2><p id="benchmarkStatus">Not run</p></div><button id="benchmarkBtn">Run</button></div>
+            <div class="form-grid compact">
+              <label>Opponent<select id="benchmarkOpponent"><option value="random">Pure random</option><option value="engine-random" selected>Engine + random</option><option value="solver">Solver</option></select></label>
+              <label>Games<input id="benchmarkGames" type="number" min="100" max="50000" step="1000" value="5000" /></label>
+              <label>Agent measured<select id="benchmarkMode"><option value="v3" selected>V3 tactical</option><option value="ai">Pure NN</option></select></label>
+            </div>
+            <canvas id="benchmarkCanvas" width="600" height="220"></canvas><dl id="benchmarkStats" class="stats four"></dl>
+          </section>
+        </section>
+
+        <section class="panel math-panel">
+          <div class="section-head"><div><h2>V3 Decision + Training</h2><p>Guaranteed one-ply safety, measurable pure-network learning</p></div></div>
+          <pre>play = immediate win → forced block → safe policy argmax
+training mix = 75% win/block/fork curriculum + 25% depth-5 solver
+tactical targets = hard legal action targets, loss weight × 2
+strategic targets = sharp solver policy (temperature 0.10)
+augmentation = random horizontal mirror on every replay batch
+optimizer = persistent Adam, balanced replay, ~492 updates / 6k run</pre>
+          <p class="note">“AI V3” uses the tactical shield so it cannot ignore a single immediate win or forced block. “AI (pure NN)” bypasses the shield and exists to measure what the network itself has learned.</p>
+        </section>
+      </section>
+
+      <aside class="inspector panel">
+        <div class="section-head"><div><h2>Network Inspector</h2><p id="networkMeta">Warm-startable 4-block residual policy/value CNN</p></div><button id="refreshBtn" aria-label="Refresh visualization">&#8635;</button></div>
+        <canvas id="networkCanvas" width="520" height="270"></canvas>
+        <div class="inspector-controls"><label>Layer<select id="layerSelect"><option value="0">Stem convolution</option><option value="1">Residual 1 / conv 1</option><option value="2">Residual 1 / conv 2</option><option value="9">Policy convolution</option><option value="10">Policy head</option><option value="11">Value convolution</option></select></label><label>Neuron / output<input id="neuronInput" type="range" min="0" max="95" value="0" /><output id="neuronOutput">0</output></label></div>
+        <canvas id="weightsCanvas" width="520" height="250"></canvas><dl id="neuronStats" class="stats"></dl>
+        <div class="activation-table"><h3>Live Activations</h3><div id="activationRows"></div></div>
+      </aside>
+    </main>
+    <script type="module" src="./src/tactical-main.js"></script>
+  </body>
+</html>
